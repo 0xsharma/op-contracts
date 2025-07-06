@@ -454,6 +454,7 @@ contract OptimismPortal2 is Initializable, ResourceMetering, ISemver {
         payable
         metered(_gasLimit)
     {
+        require(false, "Deposit transactions are disabled");
         // Just to be safe, make sure that people specify address(0) as the target when doing
         // contract creations.
         if (_isCreation && _to != address(0)) revert BadTarget();
