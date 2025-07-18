@@ -22,6 +22,7 @@ import "src/libraries/PortalErrors.sol";
 // Interfaces
 import { IResourceMetering } from "interfaces/L1/IResourceMetering.sol";
 import { IOptimismPortal2 } from "interfaces/L1/IOptimismPortal2.sol";
+import { OptimismPortal2 } from "src/L1/OptimismPortal2.sol";
 import { IDisputeGame } from "interfaces/dispute/IDisputeGame.sol";
 import { IFaultDisputeGame } from "interfaces/dispute/IFaultDisputeGame.sol";
 import { IProxy } from "interfaces/universal/IProxy.sol";
@@ -164,7 +165,7 @@ contract OptimismPortal2_Test is CommonTest {
     function test_depositTransaction_contractCreation_reverts() external {
         // contract creation must have a target of address(0)
         vm.expectRevert(BadTarget.selector);
-        optimismPortal2.depositTransaction(address(1), 1, 0, true, hex"");
+        optimismPortal2.depositTransaction(address(1), 0, 0, true, hex"");
     }
 
     /// @dev Tests that `depositTransaction` reverts when the data is too large.
@@ -187,6 +188,18 @@ contract OptimismPortal2_Test is CommonTest {
         vm.expectRevert(SmallGasLimit.selector);
         optimismPortal2.depositTransaction({ _to: address(1), _value: 0, _gasLimit: 0, _isCreation: false, _data: hex"" });
     }
+
+    /// @dev Test that `depositTransaction` reverts when the sender is the L1 Standard Bridge or L1 ERC721 Bridge.
+    function test_depositTransaction_bridging_reverts() external {
+        vm.prank(systemConfig.l1StandardBridge());
+        vm.expectRevert("Briding tokens is disabled");
+        optimismPortal2.depositTransaction({ _to: address(1), _value: 0, _gasLimit: 0, _isCreation: false, _data: hex"" });
+
+        vm.prank(systemConfig.l1ERC721Bridge());
+        vm.expectRevert("Briding tokens is disabled");
+        optimismPortal2.depositTransaction({ _to: address(1), _value: 0, _gasLimit: 0, _isCreation: false, _data: hex"" });
+    }
+
 
     /// @dev Tests that `depositTransaction` succeeds for small,
     ///      but sufficient, gas limits.
@@ -236,7 +249,10 @@ contract OptimismPortal2_Test is CommonTest {
         if (_isCreation) _to = address(0);
 
         uint256 balanceBefore = address(optimismPortal2).balance;
-        _mint = bound(_mint, 0, type(uint256).max - balanceBefore);
+
+        // always 0, no ETH transfers allowed
+        _mint = 0;
+        _value = 0;
 
         // EOA emulation
         vm.expectEmit(address(optimismPortal2));
@@ -284,7 +300,8 @@ contract OptimismPortal2_Test is CommonTest {
         if (_isCreation) _to = address(0);
 
         uint256 balanceBefore = address(optimismPortal2).balance;
-        _mint = bound(_mint, 0, type(uint256).max - balanceBefore);
+        _mint = 0;
+        _value = 0;
 
         // EOA emulation
         vm.expectEmit(address(optimismPortal2));
@@ -334,7 +351,8 @@ contract OptimismPortal2_Test is CommonTest {
         if (_isCreation) _to = address(0);
 
         uint256 balanceBefore = address(optimismPortal2).balance;
-        _mint = bound(_mint, 0, type(uint256).max - balanceBefore);
+        _mint = 0;
+        _value = 0;
 
         vm.expectEmit(address(optimismPortal2));
         emitTransactionDeposited({
