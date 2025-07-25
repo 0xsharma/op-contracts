@@ -455,7 +455,7 @@ contract OptimismPortal2 is Initializable, ResourceMetering, ISemver {
         metered(_gasLimit)
     {
         // Disabling ETH bridging
-        require(msg.value == 0 && _value == 0, "Briding ETH is disabled");
+        require(msg.value == 0, "Briding ETH is disabled");
 
         // Disabling token bridging
         require(msg.sender != systemConfig.l1StandardBridge() && msg.sender != systemConfig.l1ERC721Bridge(), "Briding tokens is disabled");
