@@ -180,7 +180,7 @@ contract OptimismPortal2 is Initializable, ResourceMetering, ISemver {
     /// @notice Semantic version.
     /// @custom:semver 3.15.0
     function version() public pure virtual returns (string memory) {
-        return "3.15.0";
+        return "agg3.15.0";
     }
 
     /// @notice Constructs the OptimismPortal contract.
