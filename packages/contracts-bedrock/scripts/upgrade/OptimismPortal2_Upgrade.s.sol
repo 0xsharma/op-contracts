@@ -5,10 +5,6 @@ import { Script, stdJson, console2 as console } from "forge-std/Script.sol";
 
 import { OptimismPortal2 } from "src/L1/OptimismPortal2.sol";
 import { ProxyAdmin } from "src/universal/ProxyAdmin.sol";
-import { GameType } from "src/dispute/lib/Types.sol";
-import { IDisputeGameFactory } from "interfaces/dispute/IDisputeGameFactory.sol";
-import { ISystemConfig } from "interfaces/L1/ISystemConfig.sol";
-import { ISuperchainConfig } from "interfaces/L1/ISuperchainConfig.sol";
 
 contract UpgradeOptimismPortal2 is Script {
     using stdJson for string;
