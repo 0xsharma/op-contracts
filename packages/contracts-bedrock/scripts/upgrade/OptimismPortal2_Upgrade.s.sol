@@ -28,7 +28,12 @@ contract UpgradeOptimismPortal2 is Script {
         address newImpl = address(new OptimismPortal2(proofMaturityDelaySeconds, disputeGameFinalityDelaySeconds));
 
         // upgrade proxy
-        ProxyAdmin(proxyAdmin).upgrade(payable(optimismPortalProxy), newImpl);
+        bytes memory payload = abi.encodeCall(ProxyAdmin.upgrade, (payable(optimismPortalProxy), newImpl));
+        console.log("payload to be sent to: ", proxyAdmin);
+        console.logBytes(payload);
+
+        // for testing
+        // ProxyAdmin(proxyAdmin).upgrade(payable(optimismPortalProxy), newImpl);
 
         vm.stopBroadcast();
     }
