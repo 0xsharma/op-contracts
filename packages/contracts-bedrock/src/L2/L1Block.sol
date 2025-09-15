@@ -144,33 +144,60 @@ contract L1Block is ISemver {
     }
 
     /// @notice Updates the L1 block values for an Ecotone upgraded chain.
-    /// Params are packed and passed in as raw msg.data instead of ABI to reduce calldata size.
-    /// Params are expected to be in the following order:
-    ///   1. _baseFeeScalar      L1 base fee scalar
-    ///   2. _blobBaseFeeScalar  L1 blob base fee scalar
-    ///   3. _sequenceNumber     Number of L2 blocks since epoch start.
-    ///   4. _timestamp          L1 timestamp.
-    ///   5. _number             L1 blocknumber.
-    ///   6. _basefee            L1 base fee.
-    ///   7. _blobBaseFee        L1 blob base fee.
-    ///   8. _hash               L1 blockhash.
-    ///   9. _batcherHash        Versioned hash to authenticate batcher by.
+    ///         Scales L1 fee scalars into CGT terms using a RAY (1e27) factor before storing.
+    ///         Preserves the exact legacy sstore pattern for both packed slots.
     function _setL1BlockValuesEcotone() internal {
         address depositor = DEPOSITOR_ACCOUNT();
         assembly {
-            // Revert if the caller is not the depositor account.
+            // Access control
             if xor(caller(), depositor) {
-                mstore(0x00, 0x3cc50b45) // 0x3cc50b45 is the 4-byte selector of "NotDepositor()"
-                revert(0x1C, 0x04) // returns the stored 4-byte selector from above
+                mstore(0x00, 0x3cc50b45) // NotDepositor()
+                revert(0x1C, 0x04)
             }
-            // sequencenum (uint64), blobBaseFeeScalar (uint32), baseFeeScalar (uint32)
-            sstore(sequenceNumber.slot, shr(128, calldataload(4)))
-            // number (uint64) and timestamp (uint64)
-            sstore(number.slot, shr(128, calldataload(20)))
-            sstore(basefee.slot, calldataload(36)) // uint256
-            sstore(blobBaseFee.slot, calldataload(68)) // uint256
-            sstore(hash.slot, calldataload(100)) // bytes32
-            sstore(batcherHash.slot, calldataload(132)) // bytes32
+
+            // ------------------------------------------------------------
+            // Calldata layout after 4-byte selector:
+            // word @ +4   : [ base(4) | blob(4) | seq(8) | ts(8) | num(8) ]
+            // word @ +20  : continuation (legacy uses TOP 16B for [ts|num])
+            // word @ +36  : basefee (uint256)
+            // word @ +68  : blobBaseFee (uint256)
+            // word @ +100 : hash (bytes32)
+            // word @ +132 : batcherHash (bytes32)
+            // ------------------------------------------------------------
+
+            let w0 := calldataload(4)
+            let w1 := calldataload(20)
+
+            // --- sequenceNumber.slot: scale base/blob & keep seq intact ---
+            // Legacy would store: sstore(sequenceNumber.slot, shr(128, w0))
+            // We replace only the first 8 bytes (base|blob) by scaled values.
+            let pack16 := shr(128, w0)                      // 16B: [base(4)|blob(4)|seq(8)]
+            let rawBase := shr(224, w0)                     // top 4 bytes of w0
+            let rawBlob := and(shr(192, w0), 0xffffffff)    // next 4 bytes
+            let seqLow  := and(pack16, 0xffffffffffffffff)  // low 8 bytes of the 16B window
+
+            // Load RAY-scaled rate from storage
+            let rate := sload(cgtPerEthRay.slot)
+            let RAY  := 1000000000000000000000000000
+
+            // Scale and clamp to uint32
+            let scaledBase := div(mul(rawBase, rate), RAY)
+            if gt(scaledBase, 0xffffffff) { scaledBase := 0xffffffff }
+            let scaledBlob := div(mul(rawBlob, rate), RAY)
+            if gt(scaledBlob, 0xffffffff) { scaledBlob := 0xffffffff }
+
+            // Pack back into the low 16 bytes (Solidity layout): base<<96 | blob<<64 | seq
+            let newPack16 := or(or(shl(96, scaledBase), shl(64, scaledBlob)), seqLow)
+            sstore(sequenceNumber.slot, newPack16)
+
+            // --- number.slot: EXACT legacy behavior (TOP 16B of w1 = [ts|num]) ---
+            sstore(number.slot, shr(128, w1))
+
+            // --- remaining fields (unchanged) ---
+            sstore(basefee.slot,     calldataload(36))
+            sstore(blobBaseFee.slot, calldataload(68))
+            sstore(hash.slot,        calldataload(100))
+            sstore(batcherHash.slot, calldataload(132))
         }
     }
 
@@ -193,24 +220,51 @@ contract L1Block is ISemver {
     }
 
     /// @notice Updates the L1 block values for an Isthmus upgraded chain.
-    /// Params are packed and passed in as raw msg.data instead of ABI to reduce calldata size.
-    /// Params are expected to be in the following order:
-    ///   1. _baseFeeScalar        L1 base fee scalar
-    ///   2. _blobBaseFeeScalar    L1 blob base fee scalar
-    ///   3. _sequenceNumber       Number of L2 blocks since epoch start.
-    ///   4. _timestamp            L1 timestamp.
-    ///   5. _number               L1 blocknumber.
-    ///   6. _basefee              L1 base fee.
-    ///   7. _blobBaseFee          L1 blob base fee.
-    ///   8. _hash                 L1 blockhash.
-    ///   9. _batcherHash          Versioned hash to authenticate batcher by.
-    ///   10. _operatorFeeScalar   Operator fee scalar.
-    ///   11. _operatorFeeConstant Operator fee constant.
+    ///         Reuses Ecotone path (with CGT scaling) and then stores operator fees as legacy does.
     function _setL1BlockValuesIsthmus() internal {
         _setL1BlockValuesEcotone();
         assembly {
-            // operatorFeeScalar (uint32), operatorFeeConstant (uint64)
+            // operatorFeeScalar (uint32), operatorFeeConstant (uint64) live in the next word(s).
+            // Legacy stores them together into operatorFeeConstant.slot by taking the top 12 bytes.
+            // Keep the exact original packing: sstore(operatorFeeConstant.slot, shr(160, calldataload(164)))
             sstore(operatorFeeConstant.slot, shr(160, calldataload(164)))
         }
+    }
+
+    // ----------------------------------------------------------------
+    // >>> New state for CGT scaling (appended to preserve storage layout)
+    // ----------------------------------------------------------------
+
+    /// @notice CGT per 1 ETH, in RAY precision (1e27). Default = 1.0 (no-op).
+    uint256 public cgtPerEthRay = 1e27;
+
+    /// @notice Optional admin (besides depositor) allowed to update the rate.
+    address public rateAdmin;
+
+    event CgtPerEthRayUpdated(uint256 oldRate, uint256 newRate);
+    event RateAdminUpdated(address indexed oldAdmin, address indexed newAdmin);
+
+    /// @notice Sets the optional rate admin. Only the depositor can set it.
+    function setRateAdmin(address newAdmin) external {
+        if (msg.sender != DEPOSITOR_ACCOUNT()) revert NotDepositor();
+        emit RateAdminUpdated(rateAdmin, newAdmin);
+        rateAdmin = newAdmin;
+    }
+
+    /// @notice Sets CGT/ETH rate in RAY precision. Callable by depositor or rateAdmin.
+    ///         Example: 1 ETH = 5 CGT => newRateRay = 5e27.
+    function setCgtPerEthRay(uint256 newRateRay) external {
+        if (msg.sender != DEPOSITOR_ACCOUNT() && msg.sender != rateAdmin) revert NotDepositor();
+        emit CgtPerEthRayUpdated(cgtPerEthRay, newRateRay);
+        cgtPerEthRay = newRateRay;
+    }
+
+    /// @notice Initialize CGT/ETH rate and rate admin. Callable only once at deployment (proxy impl init).
+    function initializeCgt(address newAdmin, uint256 rateRay) external {
+        require(rateAdmin == address(0), "already initialized");
+        require(newAdmin != address(0), "admin=0");
+        require(rateRay > 0, "rate=0");
+        rateAdmin = newAdmin;
+        cgtPerEthRay = rateRay; // e.g., 1e27 for no-op
     }
 }
