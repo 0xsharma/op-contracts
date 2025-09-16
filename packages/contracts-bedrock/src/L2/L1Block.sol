@@ -11,10 +11,9 @@ import { ISemver } from "interfaces/universal/ISemver.sol";
 /// @custom:proxied true
 /// @custom:predeploy 0x4200000000000000000000000000000000000015
 /// @title L1Block
-/// @notice The L1Block predeploy gives users access to information about the last known L1 block.
-///         Values within this contract are updated once per epoch (every L1 block) and can only be
-///         set by the "depositor" account, a special system address. Depositor account transactions
-///         are created by the protocol whenever we move to a new epoch.
+/// @notice Provides the last known L1 block information to the L2 system. Values are updated
+///         every epoch by the depositor account. This version includes support for a custom
+///         gas token multiplier that scales fee scalars proportionally.
 contract L1Block is ISemver {
     /// @notice Address of the special depositor account.
     function DEPOSITOR_ACCOUNT() public pure returns (address addr_) {
@@ -36,10 +35,10 @@ contract L1Block is ISemver {
     /// @notice The number of L2 blocks in the same epoch.
     uint64 public sequenceNumber;
 
-    /// @notice The scalar value applied to the L1 blob base fee portion of the blob-capable L1 cost func.
+    /// @notice The scalar value applied to the L1 blob base fee portion of the cost func.
     uint32 public blobBaseFeeScalar;
 
-    /// @notice The scalar value applied to the L1 base fee portion of the blob-capable L1 cost func.
+    /// @notice The scalar value applied to the L1 base fee portion of the cost func.
     uint32 public baseFeeScalar;
 
     /// @notice The versioned hash to authenticate the batcher by.
@@ -62,47 +61,69 @@ contract L1Block is ISemver {
     /// @notice The scalar value applied to the operator fee.
     uint32 public operatorFeeScalar;
 
-    /// @custom:semver 1.6.0
+    /// ---------------------------
+    /// Custom gas token multiplier
+    /// ---------------------------
+
+    /// @notice Multiplier admin (can update the multiplier).
+    address public multiplierAdmin;
+
+    /// @notice Multiplier applied to baseFeeScalar and blobBaseFeeScalar (1e27 = 1x).
+    uint256 public gasTokenMultiplierRay;
+
+    /// @custom:semver 1.7.0
     function version() public pure virtual returns (string memory) {
-        return "1.6.0";
+        return "1.7.0";
     }
 
-    /// @notice Returns the gas paying token, its decimals, name and symbol.
+    /// @notice Initialize multiplier admin and multiplier. Callable only once.
+    function initializeMultiplier(address newAdmin, uint256 multRay) external {
+        require(multiplierAdmin == address(0), "already initialized");
+        require(newAdmin != address(0), "admin=0");
+        require(multRay > 0, "mult=0");
+        multiplierAdmin = newAdmin;
+        gasTokenMultiplierRay = multRay;
+    }
+
+    /// @notice Update the multiplier (in RAY format, 1e27 = 1.0x).
+    function setGasTokenMultiplier(uint256 newMultRay) external {
+        require(msg.sender == multiplierAdmin, "not admin");
+        require(newMultRay > 0, "mult=0");
+        gasTokenMultiplierRay = newMultRay;
+    }
+
+    /// @notice Change the multiplier admin.
+    function setMultiplierAdmin(address newAdmin) external {
+        require(msg.sender == multiplierAdmin, "not admin");
+        require(newAdmin != address(0), "admin=0");
+        multiplierAdmin = newAdmin;
+    }
+
+    /// ---------------------------
+    /// Gas token identity (legacy)
+    /// ---------------------------
+
     function gasPayingToken() public pure returns (address addr_, uint8 decimals_) {
         addr_ = Constants.ETHER;
         decimals_ = 18;
     }
 
-    /// @notice Returns the gas paying token name.
-    ///         If nothing is set in state, then it means ether is used.
-    ///         This function cannot be removed because WETH depends on it.
     function gasPayingTokenName() public pure returns (string memory name_) {
         name_ = "Ether";
     }
 
-    /// @notice Returns the gas paying token symbol.
-    ///         If nothing is set in state, then it means ether is used.
-    ///         This function cannot be removed because WETH depends on it.
     function gasPayingTokenSymbol() public pure returns (string memory symbol_) {
         symbol_ = "ETH";
     }
 
-    /// @notice Getter for custom gas token paying networks. Returns true if the
-    ///         network uses a custom gas token.
     function isCustomGasToken() public pure returns (bool is_) {
         is_ = false;
     }
 
-    /// @custom:legacy
-    /// @notice Updates the L1 block values.
-    /// @param _number         L1 blocknumber.
-    /// @param _timestamp      L1 timestamp.
-    /// @param _basefee        L1 basefee.
-    /// @param _hash           L1 blockhash.
-    /// @param _sequenceNumber Number of L2 blocks since epoch start.
-    /// @param _batcherHash    Versioned hash to authenticate batcher by.
-    /// @param _l1FeeOverhead  L1 fee overhead.
-    /// @param _l1FeeScalar    L1 fee scalar.
+    /// ---------------------------
+    /// Legacy setter
+    /// ---------------------------
+
     function setL1BlockValues(
         uint64 _number,
         uint64 _timestamp,
@@ -115,7 +136,7 @@ contract L1Block is ISemver {
     )
         external
     {
-        require(msg.sender == DEPOSITOR_ACCOUNT(), "L1Block: only the depositor account can set L1 block values");
+        require(msg.sender == DEPOSITOR_ACCOUNT(), "L1Block: only depositor");
 
         number = _number;
         timestamp = _timestamp;
@@ -127,73 +148,50 @@ contract L1Block is ISemver {
         l1FeeScalar = _l1FeeScalar;
     }
 
-    /// @notice Updates the L1 block values for an Ecotone upgraded chain.
-    /// Params are packed and passed in as raw msg.data instead of ABI to reduce calldata size.
-    /// Params are expected to be in the following order:
-    ///   1. _baseFeeScalar      L1 base fee scalar
-    ///   2. _blobBaseFeeScalar  L1 blob base fee scalar
-    ///   3. _sequenceNumber     Number of L2 blocks since epoch start.
-    ///   4. _timestamp          L1 timestamp.
-    ///   5. _number             L1 blocknumber.
-    ///   6. _basefee            L1 base fee.
-    ///   7. _blobBaseFee        L1 blob base fee.
-    ///   8. _hash               L1 blockhash.
-    ///   9. _batcherHash        Versioned hash to authenticate batcher by.
+    /// ---------------------------
+    /// Ecotone setter (with multiplier)
+    /// ---------------------------
+
     function setL1BlockValuesEcotone() public {
         _setL1BlockValuesEcotone();
     }
 
-    /// @notice Updates the L1 block values for an Ecotone upgraded chain.
-    ///         Scales L1 fee scalars into CGT terms using a RAY (1e27) factor before storing.
-    ///         Preserves the exact legacy sstore pattern for both packed slots.
     function _setL1BlockValuesEcotone() internal {
         address depositor = DEPOSITOR_ACCOUNT();
+        uint256 mult = gasTokenMultiplierRay == 0 ? 1e27 : gasTokenMultiplierRay;
         assembly {
-            // Access control
+            // Check depositor
             if xor(caller(), depositor) {
                 mstore(0x00, 0x3cc50b45) // NotDepositor()
                 revert(0x1C, 0x04)
             }
 
-            // ------------------------------------------------------------
-            // Calldata layout after 4-byte selector:
-            // word @ +4   : [ base(4) | blob(4) | seq(8) | ts(8) | num(8) ]
-            // word @ +20  : continuation (legacy uses TOP 16B for [ts|num])
-            // word @ +36  : basefee (uint256)
-            // word @ +68  : blobBaseFee (uint256)
-            // word @ +100 : hash (bytes32)
-            // word @ +132 : batcherHash (bytes32)
-            // ------------------------------------------------------------
-
+            // w0 layout (después del selector, @+4):
+            // [ baseFeeScalar(4) | blobBaseFeeScalar(4) | sequenceNumber(8) | timestamp(8) | number(8) ]
             let w0 := calldataload(4)
-            let w1 := calldataload(20)
 
-            // --- sequenceNumber.slot: scale base/blob & keep seq intact ---
-            // Legacy would store: sstore(sequenceNumber.slot, shr(128, w0))
-            // We replace only the first 8 bytes (base|blob) by scaled values.
-            let pack16 := shr(128, w0)                      // 16B: [base(4)|blob(4)|seq(8)]
-            let rawBase := shr(224, w0)                     // top 4 bytes of w0
-            let rawBlob := and(shr(192, w0), 0xffffffff)    // next 4 bytes
-            let seqLow  := and(pack16, 0xffffffffffffffff)  // low 8 bytes of the 16B window
+            // Extrae crudos
+            let rawBase := and(shr(224, w0), 0xffffffff)         // uint32 (ojo: orden!)
+            let rawBlob := and(shr(192, w0), 0xffffffff)         // uint32
+            let seq     := and(shr(128, w0), 0xffffffffffffffff) // uint64
+            let ts      := and(shr(64,  w0), 0xffffffffffffffff) // uint64
+            let num     := and(        w0,  0xffffffffffffffff)  // uint64
 
-            // Load RAY-scaled rate from storage
-            let rate := sload(cgtPerEthRay.slot)
-            let RAY  := 1000000000000000000000000000
+            // Escala (RAY = 1e27)
+            let RAY := 1000000000000000000000000000
+            let sBase := div(mul(rawBase, mult), RAY)
+            if gt(sBase, 0xffffffff) { sBase := 0xffffffff }
+            let sBlob := div(mul(rawBlob, mult), RAY)
+            if gt(sBlob, 0xffffffff) { sBlob := 0xffffffff }
 
-            // Scale and clamp to uint32
-            let scaledBase := div(mul(rawBase, rate), RAY)
-            if gt(scaledBase, 0xffffffff) { scaledBase := 0xffffffff }
-            let scaledBlob := div(mul(rawBlob, rate), RAY)
-            if gt(scaledBlob, 0xffffffff) { scaledBlob := 0xffffffff }
+            // Empaqueta UNA SOLA VEZ: [ base(32b) | blob(32b) | seq(64b) ]
+            let packed := or(or(shl(96, sBase), shl(64, sBlob)), seq)
+            sstore(sequenceNumber.slot, packed)          // << único sstore para el slot empaquetado
 
-            // Pack back into the low 16 bytes (Solidity layout): base<<96 | blob<<64 | seq
-            let newPack16 := or(or(shl(96, scaledBase), shl(64, scaledBlob)), seqLow)
-            sstore(sequenceNumber.slot, newPack16)
+            // number|timestamp (empaquetado)
+            sstore(number.slot, or(shl(64, ts), num))
 
-            // --- number.slot: EXACT legacy behavior (TOP 16B of w1 = [ts|num]) ---
-            sstore(number.slot, shr(128, w1))
-
-            // --- remaining fields (unchanged) ---
+            // Resto de campos
             sstore(basefee.slot,     calldataload(36))
             sstore(blobBaseFee.slot, calldataload(68))
             sstore(hash.slot,        calldataload(100))
@@ -201,70 +199,33 @@ contract L1Block is ISemver {
         }
     }
 
-    /// @notice Updates the L1 block values for an Isthmus upgraded chain.
-    /// Params are packed and passed in as raw msg.data instead of ABI to reduce calldata size.
-    /// Params are expected to be in the following order:
-    ///   1. _baseFeeScalar        L1 base fee scalar
-    ///   2. _blobBaseFeeScalar    L1 blob base fee scalar
-    ///   3. _sequenceNumber       Number of L2 blocks since epoch start.
-    ///   4. _timestamp            L1 timestamp.
-    ///   5. _number               L1 blocknumber.
-    ///   6. _basefee              L1 base fee.
-    ///   7. _blobBaseFee          L1 blob base fee.
-    ///   8. _hash                 L1 blockhash.
-    ///   9. _batcherHash          Versioned hash to authenticate batcher by.
-    ///   10. _operatorFeeScalar   Operator fee scalar.
-    ///   11. _operatorFeeConstant Operator fee constant.
+    /// ---------------------------
+    /// Isthmus setter (extends Ecotone)
+    /// ---------------------------
+
     function setL1BlockValuesIsthmus() public {
         _setL1BlockValuesIsthmus();
     }
 
-    /// @notice Updates the L1 block values for an Isthmus upgraded chain.
-    ///         Reuses Ecotone path (with CGT scaling) and then stores operator fees as legacy does.
     function _setL1BlockValuesIsthmus() internal {
         _setL1BlockValuesEcotone();
         assembly {
-            // operatorFeeScalar (uint32), operatorFeeConstant (uint64) live in the next word(s).
-            // Legacy stores them together into operatorFeeConstant.slot by taking the top 12 bytes.
-            // Keep the exact original packing: sstore(operatorFeeConstant.slot, shr(160, calldataload(164)))
-            sstore(operatorFeeConstant.slot, shr(160, calldataload(164)))
+            // Load the packed 96-bit operator fees (operatorFeeScalar:uint32 | operatorFeeConstant:uint64)
+            // from calldata (shifted right by 160 to bring the high 12 bytes down to the low 12 bytes).
+            let newLow96 := shr(160, calldataload(164)) // 96 bits in the low part
+
+            // Read current slot that packs:
+            // [ multiplierAdmin (160 bits high) | operatorFeeScalar (32) | operatorFeeConstant (64) ]
+            let prev := sload(operatorFeeConstant.slot)
+
+            // Mask to preserve the high 160 bits (multiplierAdmin) and clear the low 96 bits
+            // mask = (~((1<<96)-1)) = 0xFFFF...FFFF000000000000000000000000000000000000000000000000000000
+            let mask := not(sub(shl(96, 1), 1))
+
+            // Merge: keep high 160 bits from prev, put newLow96 in the low 96 bits
+            let merged := or(and(prev, mask), newLow96)
+
+            sstore(operatorFeeConstant.slot, merged)
         }
-    }
-
-    // ----------------------------------------------------------------
-    // >>> New state for CGT scaling (appended to preserve storage layout)
-    // ----------------------------------------------------------------
-
-    /// @notice CGT per 1 ETH, in RAY precision (1e27). Default = 1.0 (no-op).
-    uint256 public cgtPerEthRay = 1e27;
-
-    /// @notice Optional admin (besides depositor) allowed to update the rate.
-    address public rateAdmin;
-
-    event CgtPerEthRayUpdated(uint256 oldRate, uint256 newRate);
-    event RateAdminUpdated(address indexed oldAdmin, address indexed newAdmin);
-
-    /// @notice Sets the optional rate admin. Only the depositor can set it.
-    function setRateAdmin(address newAdmin) external {
-        if (msg.sender != DEPOSITOR_ACCOUNT()) revert NotDepositor();
-        emit RateAdminUpdated(rateAdmin, newAdmin);
-        rateAdmin = newAdmin;
-    }
-
-    /// @notice Sets CGT/ETH rate in RAY precision. Callable by depositor or rateAdmin.
-    ///         Example: 1 ETH = 5 CGT => newRateRay = 5e27.
-    function setCgtPerEthRay(uint256 newRateRay) external {
-        if (msg.sender != DEPOSITOR_ACCOUNT() && msg.sender != rateAdmin) revert NotDepositor();
-        emit CgtPerEthRayUpdated(cgtPerEthRay, newRateRay);
-        cgtPerEthRay = newRateRay;
-    }
-
-    /// @notice Initialize CGT/ETH rate and rate admin. Callable only once at deployment (proxy impl init).
-    function initializeCgt(address newAdmin, uint256 rateRay) external {
-        require(rateAdmin == address(0), "already initialized");
-        require(newAdmin != address(0), "admin=0");
-        require(rateRay > 0, "rate=0");
-        rateAdmin = newAdmin;
-        cgtPerEthRay = rateRay; // e.g., 1e27 for no-op
     }
 }

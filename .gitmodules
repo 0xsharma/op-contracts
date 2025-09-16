@@ -19,7 +19,7 @@
 	url = https://github.com/runtimeverification/kontrol-cheatcodes
 [submodule "packages/contracts-bedrock/lib/solady"]
 	path = packages/contracts-bedrock/lib/solady
-	url = https://github.com/Vectorized/solady
+	url = https://github.com/vectorized/solady
 [submodule "packages/contracts-bedrock/lib/lib-keccak"]
 	path = packages/contracts-bedrock/lib/lib-keccak
 	url = https://github.com/ethereum-optimism/lib-keccak
@@ -32,3 +32,9 @@
 [submodule "packages/contracts-bedrock/lib/superchain-registry"]
 	path = packages/contracts-bedrock/lib/superchain-registry
 	url = https://github.com/ethereum-optimism/superchain-registry
+[submodule "lib/forge-std"]
+	branch = master
+[submodule "lib/solmate"]
+	branch = main
+[submodule "lib/solady"]
+	branch = main
